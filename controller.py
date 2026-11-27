@@ -818,6 +818,31 @@ class AnkiSearchBackend:
             if callable(close):
                 close()
 
+    @staticmethod
+    def _prune_invalid_derived_artifacts(
+        profile_dir: Path, *, prefix: str, keep_latest: int = 1
+    ) -> None:
+        """Remove stale <prefix>.invalid-* derived artifacts while keeping the latest if needed."""
+
+        import shutil
+
+        if not profile_dir.exists():
+            return
+        marker = f"{prefix}.invalid-"
+        candidates = sorted(
+            (p for p in profile_dir.iterdir() if p.name.startswith(marker)),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+            reverse=True,
+        )
+        for stale in candidates[max(0, int(keep_latest)):]:
+            try:
+                if stale.is_dir():
+                    shutil.rmtree(stale, ignore_errors=True)
+                else:
+                    stale.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _open_or_recover_index(
         self,
         path: Path,
@@ -825,7 +850,9 @@ class AnkiSearchBackend:
         cancel_check: Callable[[], None] | None = None,
     ) -> SmartSearchIndex:
         try:
-            return SmartSearchIndex(path, cancel_check=cancel_check)
+            index = SmartSearchIndex(path, cancel_check=cancel_check)
+            self._prune_invalid_derived_artifacts(path.parent, prefix=path.name, keep_latest=1)
+            return index
         except FTS5Unavailable:
             raise
         except Exception:
@@ -883,11 +910,15 @@ class AnkiSearchBackend:
             self.data_root / "profiles" / str(profile_key_value) / "vectors"
         )
         try:
-            return SemanticService(
+            service = SemanticService(
                 data_root=self.data_root,
                 bundle_root=self.bundle_root,
                 profile_key=profile_key_value,
             )
+            self._prune_invalid_derived_artifacts(
+                vector_root.parent, prefix=vector_root.name, keep_latest=0
+            )
+            return service
         except Exception as first_error:
             if not vector_root.exists():
                 raise
@@ -900,6 +931,9 @@ class AnkiSearchBackend:
                 counter += 1
             try:
                 os.replace(vector_root, archived)
+                self._prune_invalid_derived_artifacts(
+                    vector_root.parent, prefix=vector_root.name, keep_latest=1
+                )
             except Exception as archive_error:
                 raise RuntimeError(
                     "The semantic vector index could not be opened or preserved "
@@ -2107,6 +2141,7 @@ class AnkiSearchBackend:
                             rebuild_audit_sequence,
                             clear_meta_keys=("force_canonical_hydration",),
                         )
+                    context.index.checkpoint_and_optimize()
                 _raise_if_cancelled(event)
                 return count
 
@@ -2499,6 +2534,7 @@ class AnkiSearchBackend:
                     request.sequence,
                     clear_meta_keys=("force_canonical_hydration",),
                 )
+                context.index.checkpoint_and_optimize()
                 _raise_if_cancelled(event)
                 return difference
 

@@ -746,7 +746,22 @@ class MaintenanceJournal:
                     "DELETE FROM journal_meta WHERE key = ?",
                     ((key,) for key in keys),
                 )
+        self.checkpoint("TRUNCATE")
         return True
+
+    def checkpoint(self, mode: str = "PASSIVE") -> None:
+        """Flush WAL pages back into the main journal DB to prevent unbounded WAL growth."""
+
+        normalized = str(mode).upper()
+        if normalized not in {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}:
+            normalized = "PASSIVE"
+        with self._lock:
+            if self._connection is None:
+                return
+            try:
+                self._connection.execute(f"PRAGMA wal_checkpoint({normalized})")
+            except sqlite3.Error:
+                pass
 
     def get_meta(self, key: str, default: str | None = None) -> str | None:
         with self._lock:
