@@ -439,6 +439,25 @@ class SmartSearchIndex:
             else:
                 self.connection.execute("COMMIT")
 
+    def checkpoint_and_optimize(self, *, vacuum_freelist_ratio: float = 0.25) -> None:
+        """Truncate WAL, refresh SQLite planner stats, and VACUUM if fragmentation is high."""
+
+        with self._lock:
+            if self._connection is None or self._memory:
+                return
+            try:
+                self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._connection.execute("PRAGMA optimize")
+                page_count_row = self._connection.execute("PRAGMA page_count").fetchone()
+                freelist_row = self._connection.execute("PRAGMA freelist_count").fetchone()
+                page_count = int(page_count_row[0]) if page_count_row else 0
+                freelist = int(freelist_row[0]) if freelist_row else 0
+                if page_count > 0 and (freelist / page_count) >= vacuum_freelist_ratio:
+                    self._connection.execute("VACUUM")
+                    self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
+
     def close(self) -> None:
         with self._lock:
             if self._connection is None:
